@@ -28,7 +28,7 @@ install_packages() {
   fi
   echo "正在尝试安装必要的软件包: ${packages_to_install[*]}"
   if check_command apt-get; then
-    apt-get update -qq && apt-get install -y -qq "${packages_to_install[@]}"
+    DEBIAN_FRONTEND=noninteractive apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${packages_to_install[@]}"
   elif check_command yum; then
     yum install -y -q "${packages_to_install[@]}"
   elif check_command dnf; then
@@ -131,26 +131,36 @@ require_root() {
 # --- 服务管理与安装卸载函数 ---
 
 do_install() {
+    local ANYTLS_PORT=8443
+    local ANYTLS_PASSWORD=4691d36a-b953-4935-bad9-3d5f00746a6b
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --port | --password)
+                if [ "$#" -lt 2 ] || [ -z "$2" ] || [[ "$2" == --* ]]; then
+                    echo "错误：参数 $1 需要非空的值。" >&2
+                    exit 1
+                fi
+                case "$1" in
+                    --port) ANYTLS_PORT="$2" ;;
+                    --password) ANYTLS_PASSWORD="$2" ;;
+                esac
+                shift 2
+                ;;
+            *) echo "错误：未知安装参数 '$1'。" >&2; exit 1 ;;
+        esac
+    done
+    if ! [[ "$ANYTLS_PORT" =~ ^[0-9]{1,5}$ ]] || [ "$((10#$ANYTLS_PORT))" -lt 1 ] || [ "$((10#$ANYTLS_PORT))" -gt 65535 ]; then
+        echo "错误：端口号 \"$ANYTLS_PORT\" 无效。" >&2
+        exit 1
+    fi
+    ANYTLS_PORT=$((10#$ANYTLS_PORT))
+    if [[ "$ANYTLS_PASSWORD" == *$'\n'* || "$ANYTLS_PASSWORD" == *$'\r'* ]]; then
+        echo "错误：密码不能包含换行符。" >&2
+        exit 1
+    fi
     require_root "install"
     echo "开始安装/更新 AnyTLS-Go 服务 (目标版本: ${ANYTLS_VERSION})..."
     echo "=================================================="
-
-    read -r -p "请输入 AnyTLS 服务端监听端口 (默认 8443): " ANYTLS_PORT
-    ANYTLS_PORT=${ANYTLS_PORT:-8443}
-    if ! [[ "$ANYTLS_PORT" =~ ^[0-9]+$ ]] || [ "$ANYTLS_PORT" -lt 1 ] || [ "$ANYTLS_PORT" -gt 65535 ]; then
-        echo "错误：端口号 \"$ANYTLS_PORT\" 无效。"
-        exit 1
-    fi
-
-    local ANYTLS_PASSWORD ANYTLS_PASSWORD_CONFIRM
-    while true; do
-      read -r -s -p "请输入 AnyTLS 服务端密码 (必须填写): " ANYTLS_PASSWORD
-      echo
-      if [ -z "$ANYTLS_PASSWORD" ]; then echo "错误：密码不能为空，请重新输入。"; continue; fi
-      read -r -s -p "请再次输入密码以确认: " ANYTLS_PASSWORD_CONFIRM
-      echo
-      if [ "$ANYTLS_PASSWORD" == "$ANYTLS_PASSWORD_CONFIRM" ]; then break; else echo "两次输入的密码不一致，请重新输入。"; fi
-    done
 
     local deps_to_install=()
     if ! check_command wget; then deps_to_install+=("wget"); fi
@@ -197,6 +207,11 @@ do_install() {
     chmod +x "${SERVER_BINARY_PATH}"
 
     echo "正在创建/更新 systemd 服务文件: ${SERVICE_FILE} ..."
+    # Escape systemd quoting, environment expansion and specifiers, not shell syntax.
+    local SERVICE_PASSWORD="${ANYTLS_PASSWORD//\\/\\\\}"
+    SERVICE_PASSWORD="${SERVICE_PASSWORD//\"/\\\"}"
+    SERVICE_PASSWORD="${SERVICE_PASSWORD//\$/\$\$}"
+    SERVICE_PASSWORD="${SERVICE_PASSWORD//%/%%}"
     cat > "$SERVICE_FILE" << EOF
 [Unit]
 Description=AnyTLS Server Service (Version ${ANYTLS_VERSION})
@@ -207,7 +222,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=root
-ExecStart=${SERVER_BINARY_PATH} -l 0.0.0.0:${ANYTLS_PORT} -p "${ANYTLS_PASSWORD}"
+ExecStart=${SERVER_BINARY_PATH} -l 0.0.0.0:${ANYTLS_PORT} -p "${SERVICE_PASSWORD}"
 Restart=on-failure
 RestartSec=10s
 LimitNOFILE=65535
@@ -222,7 +237,7 @@ EOF
     systemctl daemon-reload
     if ! systemctl enable "${SERVICE_FILE_BASENAME}"; then echo "错误：设置开机自启失败。"; exit 1; fi
     if ! systemctl restart "${SERVICE_FILE_BASENAME}"; then # Use restart to ensure it starts fresh
-        echo "错误：启动/重启 AnyTLS 服务失败。请检查日志。"; status_service; log_service -n 20; exit 1;
+        echo "错误：启动/重启 AnyTLS 服务失败。请检查日志。"; status_service; journalctl -u "${SERVICE_FILE_BASENAME}" -n 20 --no-pager; exit 1;
     fi
     
     sleep 2
@@ -234,7 +249,7 @@ EOF
         generate_and_display_qr_codes "${SERVER_IP}" "${ANYTLS_PORT}" "${ANYTLS_PASSWORD}" "install"
         display_manage_commands
     else
-        echo "错误: AnyTLS 服务未能成功启动。"; status_service; log_service -n 20;
+        echo "错误: AnyTLS 服务未能成功启动。"; status_service; journalctl -u "${SERVICE_FILE_BASENAME}" -n 20 --no-pager; exit 1;
     fi
 }
 
@@ -360,7 +375,7 @@ show_qr_codes_interactive() {
 
 display_manage_commands() {
     echo "【常用管理命令】"
-    echo "  安装/更新: sudo $0 install"
+    echo "  安装/更新: sudo $0 install [--port 端口] [--password 密码]"
     echo "  卸载服务  : sudo $0 uninstall"
     echo "  启动服务  : sudo $0 start"
     echo "  停止服务  : sudo $0 stop"
@@ -374,7 +389,7 @@ display_manage_commands() {
 
 show_help_menu() {
     echo "AnyTLS-Go 服务端管理脚本"
-    echo "用法: $0 [命令]"
+    echo "用法: $0 [命令] [参数]（无命令时自动安装）"
     echo ""
     echo "可用命令:"
     printf "  %-12s %s\n" "install" "安装或更新 AnyTLS-Go 服务 (需要sudo)"
@@ -387,17 +402,23 @@ show_help_menu() {
     printf "  %-12s %s\n" "qr" "重新生成并显示配置二维码 (需要输入密码)"
     printf "  %-12s %s\n" "help" "显示此帮助菜单"
     echo ""
-    echo "示例: sudo $0 install"
+    echo "安装参数: --port 端口 (默认 8443) --password 密码"
+    echo "默认密码: 4691d36a-b953-4935-bad9-3d5f00746a6b"
+    echo "安装和卸载均无需交互确认。"
+    echo "示例: sudo $0 install --port 9443 --password 'your-password'"
 }
 
 
 # --- 主程序入口 ---
 main() {
-    ACTION="$1"
-    shift # Remove the first argument, so log can take its own args like -n 50
+    local ACTION="${1:-install}"
+    case "$ACTION" in
+        --port | --password) ACTION=install ;;
+        *) if [ "$#" -gt 0 ]; then shift; fi ;;
+    esac
 
     case "$ACTION" in
-        install) do_install ;;
+        install) do_install "$@" ;;
         uninstall) do_uninstall ;;
         start) start_service ;;
         stop) stop_service ;;
