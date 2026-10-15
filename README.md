@@ -8,7 +8,7 @@
     * 开机自启
     * 通过 `systemctl` 控制服务的启动、停止、重启
     * 方便地查看服务状态和日志
-* **交互式配置**：引导用户设置监听端口和连接密码。
+* **无交互安装**：通过 `--port` 和 `--password` 设置监听端口和连接密码，省略时使用默认值。
 * **二维码生成**：自动为 NekoBox 和 Shadowrocket 生成配置二维码，方便移动端导入。
 * **轻松卸载**：提供完整的卸载选项，移除程序和服务文件。
 * **架构自动识别**：支持 `amd64 (x86_64)` 和 `arm64 (aarch64)` 架构的 Linux VPS。
@@ -51,7 +51,7 @@ chmod +x anytls_manager.sh
     ./anytls_manager.sh help
     ```
 
-    或者直接运行 `./anytls_manager.sh`
+    或者运行 `./anytls_manager.sh --help`（不带参数会直接安装）。
 
     ![media/help.png](media/help.png)
 
@@ -62,13 +62,26 @@ chmod +x anytls_manager.sh
     sudo ./anytls_manager.sh install
     ```
 
-    脚本会引导你完成端口和密码的设置。
+    安装全程无需输入或确认。不带命令运行 `sudo ./anytls_manager.sh` 也会自动安装。
+    默认端口为 `8443`，默认密码为 `4691d36a-b953-4935-bad9-3d5f00746a6b`。
+    可分别覆盖端口或密码：
+
+    ```bash
+    sudo ./anytls_manager.sh --port 9443 --password 'your-password'
+    sudo ./anytls_manager.sh install --port 9443
+    sudo ./anytls_manager.sh install --password 'your-password'
+    ```
+
+    参数错误会直接报错退出，不会转为交互输入。公网部署建议指定独立密码；命令行密码可能留在 shell 历史记录中。
+    自动化环境请以 root 执行或使用免密 sudo，避免 sudo 自身要求输入密码。
 
   * **卸载 AnyTLS-Go 服务**:
 
     ```bash
     sudo ./anytls_manager.sh uninstall
     ```
+
+    卸载无需交互确认，会停止并禁用服务、删除服务文件和服务端程序。未安装时仅输出提示。
 
   * **启动服务**:
 
@@ -138,5 +151,4 @@ chmod +x anytls_manager.sh
   * 本脚本仅供学习和技术研究使用，请勿用于任何非法用途。
   * 用户在使用本脚本搭建代理服务时，应自行承担一切风险，并确保遵守当地的法律法规。
   * 对于因使用本脚本而可能产生的任何问题或纠纷，脚本作者概不负责。
-
 
